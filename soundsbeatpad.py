@@ -2361,6 +2361,7 @@ def build_ui():
             SOUNDS[row_id] = path
             update_pad_button(row_id)
             seq_keymap[row_id] = path
+            draw_seq_grid()
         if row_id and row_id not in seq_buttons:
             draw_seq_grid()
         if row_id not in seq_rows:
@@ -2575,6 +2576,7 @@ def build_ui():
         ensure_key_for_path(path)
         SOUNDS[key] = path
         update_pad_button(key)
+        draw_seq_grid()
         status_var.set(f"Assigned {os.path.basename(path)} to {key.upper()}")
 
     def on_sample_double_click(_):
