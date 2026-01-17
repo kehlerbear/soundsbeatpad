@@ -1,5 +1,7 @@
 import os
+import sys
 import time
+import shutil
 import threading
 import numpy as np
 import sounddevice as sd
@@ -22,8 +24,31 @@ RECORD_PEAK = 0.98
 # -----------------------------
 # Paths + Key Mapping
 # -----------------------------
-ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "sounds", "ABSTRUCT_Beatpack_Python"))
+def resource_root() -> str:
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return os.path.normpath(sys._MEIPASS)
+    return os.path.normpath(os.path.dirname(os.path.abspath(__file__)))
+
+def writable_root() -> str:
+    if getattr(sys, "frozen", False):
+        return os.path.normpath(os.path.dirname(sys.executable))
+    return os.path.normpath(os.path.dirname(os.path.abspath(__file__)))
+
+def resolve_sound_root() -> str:
+    base = resource_root()
+    candidates = [
+        os.path.join(base, "sounds", "ABSTRUCT_Beatpack_Python"),
+        os.path.join(base, "ABSTRUCT_Beatpack_Python"),
+    ]
+    for c in candidates:
+        if os.path.isdir(c):
+            return os.path.normpath(c)
+    return os.path.normpath(candidates[0])
+
+APP_ROOT = writable_root()
+ROOT = resolve_sound_root()
 EXTRA_ROOTS = []
+RECORDINGS_DIR = os.path.join(APP_ROOT, "recordings")
 
 def p(*parts):
     return os.path.normpath(os.path.join(*parts))
@@ -410,6 +435,7 @@ def build_ui():
     COL_WARN = "#ff2e63"
 
     root.configure(bg=COL_BG)
+    style = ttk.Style(root)
 
     menubar = tk.Menu(root)
     help_menu = tk.Menu(menubar, tearoff=0)
@@ -430,9 +456,9 @@ def build_ui():
     top = tk.Frame(root, bg=COL_BG)
     top.pack(fill="x", padx=10, pady=8)
 
-    tk.Label(top, textvariable=status_var, font=("Arial", 13), bg=COL_BG, fg=COL_TEXT).pack(side="left")
-    meter = ttk.Progressbar(top, length=180, maximum=1.0)
-    meter.pack(side="right", padx=6)
+    tk.Label(top, text="The world is yours.", font=("Arial", 13), bg=COL_BG, fg=COL_TEXT).pack(side="left")
+    meter_canvas = tk.Canvas(top, width=220, height=18, bg=COL_PANEL, highlightthickness=0)
+    meter_canvas.pack(side="right", padx=6)
     tk.Label(top, textvariable=pb_var, font=("Arial", 11), bg=COL_BG, fg=COL_TEXT).pack(side="right", padx=12)
     tk.Label(top, textvariable=rec_var, font=("Arial", 11), bg=COL_BG, fg=COL_TEXT).pack(side="right", padx=12)
 
@@ -461,6 +487,13 @@ def build_ui():
     tk.Button(sidebar, text="Studio", command=lambda: go_tab(record_tab), bg=COL_PANEL, fg=COL_TEXT, activebackground=COL_ACCENT, activeforeground=COL_BG).pack(fill="x", pady=2)
     tk.Button(sidebar, text="Library", command=lambda: go_tab(library_tab), bg=COL_PANEL, fg=COL_TEXT, activebackground=COL_ACCENT, activeforeground=COL_BG).pack(fill="x", pady=2)
 
+    help_btn = tk.Button(sidebar, text="Help", bg=COL_PANEL, fg=COL_TEXT, activebackground=COL_ACCENT_2, activeforeground=COL_BG)
+    help_btn.pack(fill="x", pady=(10, 2))
+    save_btn = tk.Button(sidebar, text="Save Take...", bg=COL_PANEL, fg=COL_TEXT, activebackground=COL_ACCENT, activeforeground=COL_BG)
+    save_btn.pack(fill="x", pady=2)
+    open_btn = tk.Button(sidebar, text="Open Take...", bg=COL_PANEL, fg=COL_TEXT, activebackground=COL_ACCENT, activeforeground=COL_BG)
+    open_btn.pack(fill="x", pady=2)
+
     closed_panel_frame = tk.LabelFrame(sidebar, text="Closed Panels", bg=COL_PANEL, fg=COL_TEXT)
     closed_panel_frame.pack(fill="both", expand=True, pady=(12, 6))
     closed_list = tk.Listbox(closed_panel_frame, height=6)
@@ -476,11 +509,22 @@ def build_ui():
             if not data["state"].get():
                 closed_list.insert(tk.END, title)
 
-    def reopen_closed_panel(_event=None):
+    def get_closed_selection():
         sel = closed_list.curselection()
-        if not sel:
+        if sel:
+            return sel[0]
+        active = closed_list.index(tk.ACTIVE)
+        if active is not None and active >= 0 and closed_list.size() > 0:
+            return active
+        if closed_list.size() > 0:
+            return 0
+        return None
+
+    def reopen_closed_panel(_event=None):
+        idx = get_closed_selection()
+        if idx is None:
             return
-        title = closed_list.get(sel[0])
+        title = closed_list.get(idx)
         data = section_states.get(title)
         if not data:
             return
@@ -492,12 +536,12 @@ def build_ui():
     tk.Button(closed_btns, text="Open", command=reopen_closed_panel).pack(side="left", padx=2)
 
     def reopen_closed_with_others():
-        sel = closed_list.curselection()
-        if not sel:
+        idx = get_closed_selection()
+        if idx is None:
             return
         restore_layout_containers()
         restore_sections()
-        title = closed_list.get(sel[0])
+        title = closed_list.get(idx)
         data = section_states.get(title)
         if not data:
             return
@@ -598,6 +642,8 @@ def build_ui():
         station_pads: tk.BooleanVar(value=True),
         station_pattern: tk.BooleanVar(value=True),
     }
+    station_max = {"frame": None}
+    station_snapshot = {"order": None, "states": None, "sashes": None}
 
     def apply_station_order(order=None):
         for pane in station_split.panes():
@@ -689,7 +735,10 @@ def build_ui():
     left_scroll = ttk.Scrollbar(station_record_body, orient="vertical", command=left_canvas.yview)
     left_inner = tk.Frame(left_canvas)
     left_inner.bind("<Configure>", lambda e: left_canvas.configure(scrollregion=left_canvas.bbox("all")))
-    left_canvas.create_window((0, 0), window=left_inner, anchor="nw")
+    left_window = left_canvas.create_window((0, 0), window=left_inner, anchor="nw")
+    def on_left_canvas_config(event):
+        left_canvas.itemconfigure(left_window, width=event.width)
+    left_canvas.bind("<Configure>", on_left_canvas_config)
     left_canvas.configure(yscrollcommand=left_scroll.set)
     left_canvas.pack(side="left", fill="both", expand=True)
     left_scroll.pack(side="right", fill="y")
@@ -714,6 +763,8 @@ def build_ui():
     section_pack_info = {}
     section_pane_info = {}
     active_section = {"frame": None}
+    def update_waveform_layout():
+        pass
 
     def register_section(group_key, frame, parent_kind, container, pane_weight=None):
         section_groups.setdefault(group_key, []).append(frame)
@@ -721,9 +772,43 @@ def build_ui():
             section_pane_info[frame] = {"container": container, "weight": pane_weight}
 
     def restore_layout_containers():
+        station_max["frame"] = None
+        station_snapshot["order"] = None
+        station_snapshot["states"] = None
+        station_snapshot["sashes"] = None
         apply_station_order()
 
+    def restore_station_snapshot():
+        if station_snapshot["order"] is not None:
+            station_order[:] = list(station_snapshot["order"])
+        if station_snapshot["states"] is not None:
+            for st, val in station_snapshot["states"].items():
+                if st in station_states:
+                    station_states[st].set(val)
+        else:
+            for st in station_states:
+                station_states[st].set(True)
+        apply_station_order()
+        if station_snapshot["sashes"]:
+            try:
+                station_split.update_idletasks()
+                for i, pos in enumerate(station_snapshot["sashes"]):
+                    station_split.sashpos(i, pos)
+            except Exception:
+                pass
+        station_max["frame"] = None
+        station_snapshot["order"] = None
+        station_snapshot["states"] = None
+        station_snapshot["sashes"] = None
+
     def show_only_station(station):
+        if station_snapshot["order"] is None:
+            station_snapshot["order"] = list(station_order)
+            station_snapshot["states"] = {st: station_states[st].get() for st in station_states}
+            try:
+                station_snapshot["sashes"] = [station_split.sashpos(i) for i in range(max(0, len(station_split.panes()) - 1))]
+            except Exception:
+                station_snapshot["sashes"] = None
         for pane in station_split.panes():
             station_split.forget(pane)
         meta = station_meta[station]
@@ -732,10 +817,18 @@ def build_ui():
             station_split.pane(station, minsize=meta["minsize"])
         except Exception:
             pass
+        station_max["frame"] = station
 
     def is_station_only(station) -> bool:
+        if station_max["frame"] == station:
+            return True
         panes = station_split.panes()
-        return len(panes) == 1 and panes[0] == str(station)
+        if len(panes) != 1:
+            return False
+        try:
+            return root.nametowidget(panes[0]) == station
+        except Exception:
+            return panes[0] == str(station)
 
     def update_station_max_buttons():
         station_record_max_btn.config(text="Back" if is_station_only(station_record) else "Max")
@@ -744,10 +837,9 @@ def build_ui():
 
     def toggle_station_record():
         if is_station_only(station_record):
-            restore_layout_containers()
+            restore_station_snapshot()
             restore_sections()
         else:
-            restore_layout_containers()
             restore_sections()
             show_only_station(station_record)
         active_section["frame"] = None
@@ -756,10 +848,9 @@ def build_ui():
 
     def toggle_station_pads():
         if is_station_only(station_pads):
-            restore_layout_containers()
+            restore_station_snapshot()
             restore_sections()
         else:
-            restore_layout_containers()
             restore_sections()
             show_only_station(station_pads)
         active_section["frame"] = None
@@ -768,10 +859,9 @@ def build_ui():
 
     def toggle_station_pattern():
         if is_station_only(station_pattern):
-            restore_layout_containers()
+            restore_station_snapshot()
             restore_sections()
         else:
-            restore_layout_containers()
             restore_sections()
             show_only_station(station_pattern)
         active_section["frame"] = None
@@ -781,6 +871,10 @@ def build_ui():
     def close_station(station):
         station_states[station].set(False)
         apply_station_order()
+        if station_max["frame"] == station:
+            station_max["frame"] = None
+            station_snapshot["order"] = None
+            station_snapshot["states"] = None
         active_section["frame"] = None
         update_max_buttons()
         update_station_max_buttons()
@@ -810,6 +904,7 @@ def build_ui():
                     container.add(frame)
         active_section["frame"] = None
         update_max_buttons()
+        update_waveform_layout()
 
     def maximize_layout_for_group(group_key):
         restore_layout_containers()
@@ -855,6 +950,7 @@ def build_ui():
                 frame.pack(fill="both", expand=True)
         active_section["frame"] = frame
         update_max_buttons()
+        update_waveform_layout()
 
     pads_section, pads_body, pads_toggle_btn, pads_max_btn = make_section(station_pads_body, "Pads", True, group_key=group_pads, container=station_pads_body)
     pads_section.pack(fill="both", expand=True)
@@ -874,7 +970,6 @@ def build_ui():
     trim_section, trim_body, trim_toggle_btn, trim_max_btn = make_section(left_inner, "Trim", True, group_key=group_left, container=left_inner)
     trim_section.pack(fill="x", pady=6)
 
-    rec_action_btn = None
 
     section_max_buttons = [
         (record_max_btn, record_section),
@@ -893,6 +988,7 @@ def build_ui():
                 continue
             btn.config(text="Back" if active == frame else "Max")
         update_station_max_buttons()
+        update_waveform_layout()
 
     def register_station_entry(title, station):
         def update():
@@ -919,19 +1015,58 @@ def build_ui():
     section_max_buttons.append((library_max_btn, library_section))
     update_max_buttons()
 
-    help_btn = tk.Button(sidebar, text="Help", bg=COL_PANEL, fg=COL_TEXT, activebackground=COL_ACCENT_2, activeforeground=COL_BG)
-    help_btn.pack(fill="x", pady=(10, 2))
-
     pad_buttons = {}
     pad_container = tk.Frame(pads_body, highlightthickness=1, highlightbackground=COL_ACCENT_2, bg=COL_PANEL)
     pad_container.pack(fill="both", expand=True, padx=8, pady=8)
+    tab_nav = tk.Frame(pad_container, bg=COL_PANEL)
+    tab_nav.pack(fill="x", padx=6, pady=(6, 2))
     pad_notebook = ttk.Notebook(pad_container)
+    style.configure("SoundTabs.TNotebook.Tab", padding=(10, 4))
+    pad_notebook.configure(style="SoundTabs.TNotebook")
     pad_notebook.pack(side="left", fill="both", expand=True)
     pad_scroll = tk.Scrollbar(pad_container, orient="vertical", width=16)
     pad_scroll.pack(side="right", fill="y")
 
+    SOUND_TAB_COLORS = [
+        "#39ff14", "#00e5ff", "#ff2e63", "#ff9100", "#b517ff",
+        "#00ffb3", "#ffea00", "#ff4dff", "#00ffa2", "#7cff00",
+        "#ff6f00", "#00c8ff",
+    ]
+
+    def tab_color_for_widget(tab_widget) -> str:
+        try:
+            idx = pad_notebook.index(tab_widget)
+        except Exception:
+            idx = 0
+        return SOUND_TAB_COLORS[idx % len(SOUND_TAB_COLORS)]
+
+    def add_tab_color_bar(tab_widget):
+        color = tab_color_for_widget(tab_widget)
+        bar = tk.Frame(tab_widget, bg=color, height=4)
+        bar.place(x=0, y=0, relwidth=1)
+
+    def select_tab_offset(delta: int):
+        tabs = pad_notebook.tabs()
+        if not tabs:
+            return
+        current = pad_notebook.select()
+        try:
+            idx = tabs.index(current)
+        except ValueError:
+            idx = 0
+        new_idx = (idx + delta) % len(tabs)
+        pad_notebook.select(tabs[new_idx])
+
+    tk.Button(tab_nav, text="<", width=3, command=lambda: select_tab_offset(-1)).pack(side="left", padx=2)
+    tk.Button(tab_nav, text=">", width=3, command=lambda: select_tab_offset(1)).pack(side="left", padx=2)
+    current_tab_var = tk.StringVar(value="")
+    current_tab_color = tk.Label(tab_nav, text=" ", bg=COL_PANEL, width=2)
+    current_tab_color.pack(side="left", padx=(10, 4))
+    tk.Label(tab_nav, textvariable=current_tab_var, bg=COL_PANEL, fg=COL_TEXT, anchor="w").pack(side="left", padx=(0, 0))
+
     keys_tab = tk.Frame(pad_notebook)
     pad_notebook.add(keys_tab, text="Keys")
+    add_tab_color_bar(keys_tab)
 
     category_tabs = {}
     category_keymap = {}
@@ -1007,6 +1142,7 @@ def build_ui():
     rec_light.pack(side="left", padx=6, pady=6)
 
     recordings = []
+    recordings_source = {}  # path -> "recorded" | "external"
     rec_list_frame = tk.Frame(takes_frame)
     rec_list_frame.pack(fill="x", padx=6, pady=4)
     rec_list = tk.Listbox(rec_list_frame, height=5, width=40)
@@ -1023,6 +1159,34 @@ def build_ui():
     wave_info_row.pack(fill="x", padx=6, pady=(0, 2))
     tk.Label(wave_info_row, textvariable=wave_info).pack(side="left")
     tk.Button(wave_info_row, text="Delete Take", command=lambda: delete_selected_recording()).pack(side="right")
+    tk.Button(wave_info_row, text="Save Take...", command=lambda: save_selected_recording()).pack(side="right", padx=(0, 6))
+
+    open_takes_frame = tk.LabelFrame(edit_frame, text="Open Takes")
+    open_takes_frame.pack(fill="x", padx=6, pady=(4, 6))
+    open_takes = []
+    open_takes_rows = []
+    mini_wave_cache = {}
+    OPEN_TAKES_MAX = 4
+
+    def update_waveform_layout():
+        is_max = active_section["frame"] == edit_section
+        pad = 0 if is_max else 6
+        try:
+            edit_section.pack_configure(fill="both" if is_max else "x", expand=is_max)
+        except Exception:
+            pass
+        try:
+            wave_canvas.pack_configure(fill="both" if is_max else "x", expand=is_max, padx=pad, pady=(4, 2))
+        except Exception:
+            pass
+        try:
+            wave_info_row.pack_configure(padx=pad, pady=(0, 2))
+        except Exception:
+            pass
+        try:
+            open_takes_frame.pack_configure(padx=pad, pady=(4, 6), fill="x", expand=False)
+        except Exception:
+            pass
 
     wave_list_frame = tk.LabelFrame(takes_frame, text="All Recordings")
     wave_list_visible = tk.BooleanVar(value=False)
@@ -1039,11 +1203,23 @@ def build_ui():
     wave_rows = []
 
     def add_recording(path: str):
+        if path in recordings:
+            return
         recordings.append(path)
+        recordings_source.setdefault(path, "recorded")
         rec_list.insert(tk.END, os.path.basename(path))
         rec_list.selection_clear(0, tk.END)
         rec_list.selection_set(tk.END)
         add_wave_row(path)
+
+    def load_existing_recordings():
+        if not os.path.isdir(RECORDINGS_DIR):
+            return
+        for name in sorted(os.listdir(RECORDINGS_DIR)):
+            if name.lower().endswith(AUDIO_EXTS):
+                path = os.path.join(RECORDINGS_DIR, name)
+                recordings_source[path] = "recorded"
+                add_recording(path)
 
     def get_selected_recording():
         sel = rec_list.curselection()
@@ -1059,6 +1235,9 @@ def build_ui():
         path = recordings[idx]
         if not path:
             return
+        if recordings_source.get(path) == "external":
+            messagebox.showinfo("Delete recording", "This take is external and won't be deleted here.")
+            return
         if not messagebox.askyesno("Delete recording", f"Delete this recording?\n{os.path.basename(path)}"):
             return
         try:
@@ -1068,12 +1247,114 @@ def build_ui():
             messagebox.showerror("Delete failed", str(e))
             return
         removed = recordings.pop(idx)
+        recordings_source.pop(removed, None)
+        if removed in open_takes:
+            open_takes.remove(removed)
+            refresh_open_takes()
         rec_list.delete(idx)
         if ENGINE.last_recording_path == path:
             ENGINE.last_recording_path = None
         remove_wave_row(removed)
-        load_waveform(get_selected_recording())
+        path = get_selected_recording()
+        load_waveform(path)
+        add_open_take(path)
         status_var.set("Recording deleted.")
+
+    def save_selected_recording():
+        path = get_selected_recording()
+        if not path or not os.path.exists(path):
+            messagebox.showinfo("Save take", "No recording selected.")
+            return
+        target = filedialog.asksaveasfilename(
+            title="Save take as",
+            defaultextension=".wav",
+            filetypes=[("WAV audio", "*.wav"), ("All files", "*.*")],
+        )
+        if not target:
+            return
+        try:
+            shutil.copy2(path, target)
+            messagebox.showinfo("Save take", f"Saved:\n{target}")
+        except Exception as e:
+            messagebox.showerror("Save failed", str(e))
+
+    def open_take_into_waveform():
+        path = filedialog.askopenfilename(
+            title="Open audio file",
+            filetypes=[("Audio files", "*.wav *.flac *.mp3 *.ogg *.aiff *.aif"), ("All files", "*.*")]
+        )
+        if not path:
+            return
+        path = os.path.abspath(path)
+        recordings_source[path] = "external"
+        if path in recordings:
+            select_recording_by_path(path)
+        else:
+            add_recording(path)
+        ENGINE.last_recording_path = path
+        load_waveform(path)
+        add_open_take(path)
+        status_var.set(f"Loaded: {os.path.basename(path)}")
+
+    def play_take_path(path: str):
+        if not path or not os.path.exists(path):
+            return
+        try:
+            audio = load_audio_file(path)
+            ENGINE.trigger(audio, gain=1.0)
+        except Exception as e:
+            messagebox.showerror("Play error", str(e))
+
+    def draw_mini_wave(canvas: tk.Canvas, path: str):
+        canvas.delete("wave")
+        w = max(200, canvas.winfo_width())
+        h = max(40, canvas.winfo_height())
+        if not path or not os.path.exists(path):
+            canvas.create_rectangle(0, 0, w, h, fill="#0b1f4b", outline="", tags="wave")
+            return
+        try:
+            audio = load_audio_file(path)
+        except Exception:
+            canvas.create_rectangle(0, 0, w, h, fill="#0b1f4b", outline="", tags="wave")
+            return
+        if len(audio) == 0:
+            return
+        step = max(1, int(len(audio) / w))
+        samples = audio[::step]
+        if len(samples) > w:
+            samples = samples[:w]
+        if len(samples) < w:
+            samples = np.pad(samples, (0, w - len(samples)), mode="constant")
+        mid = h // 2
+        canvas.create_line(0, mid, w, mid, fill="#0f172a", tags="wave")
+        amp = np.abs(samples)
+        for i, v in enumerate(amp):
+            y = int(v * (h * 0.45))
+            canvas.create_line(i, mid - y, i, mid + y, fill=COL_ACCENT_2, tags="wave")
+
+    def refresh_open_takes():
+        for row in open_takes_rows:
+            row.destroy()
+        open_takes_rows.clear()
+        for path in open_takes:
+            row = tk.Frame(open_takes_frame, bg="#0b1f4b")
+            row.pack(fill="x", padx=6, pady=4)
+            tk.Label(row, text=os.path.basename(path), anchor="w", bg="#0b1f4b", fg=COL_TEXT).pack(side="left")
+            tk.Button(row, text="Play", command=lambda p=path: play_take_path(p)).pack(side="right", padx=(4, 0))
+            c = tk.Canvas(row, height=50, bg="#0b1f4b", highlightthickness=0)
+            c.pack(fill="x", padx=8, pady=(2, 0))
+            c.bind("<Configure>", lambda _e, p=path, cv=c: draw_mini_wave(cv, p))
+            open_takes_rows.append(row)
+
+    def add_open_take(path: str):
+        if not path:
+            return
+        if path in open_takes:
+            open_takes.remove(path)
+        open_takes.append(path)
+        while len(open_takes) > OPEN_TAKES_MAX:
+            open_takes.pop(0)
+        refresh_open_takes()
 
     rec_menu = tk.Menu(rec_frame, tearoff=0)
     rec_menu.add_command(label="Delete recording", command=delete_selected_recording)
@@ -1143,6 +1424,8 @@ def build_ui():
             rec_list.see(idx)
             load_waveform(path)
 
+    load_existing_recordings()
+
     def save_recording():
         audio = ENGINE.get_recording()
         if len(audio) == 0:
@@ -1153,9 +1436,11 @@ def build_ui():
             audio = (audio * (RECORD_PEAK / peak)).astype(np.float32)
 
         ts = time.strftime("%Y%m%d_%H%M%S")
-        outname = f"beatpad_recording_{ts}.wav"
+        os.makedirs(RECORDINGS_DIR, exist_ok=True)
+        outname = os.path.join(RECORDINGS_DIR, f"beatpad_recording_{ts}.wav")
         sf.write(outname, audio, SR, subtype="PCM_16")
         ENGINE.last_recording_path = os.path.abspath(outname)
+        recordings_source[ENGINE.last_recording_path] = "recorded"
         add_recording(ENGINE.last_recording_path)
         return outname
 
@@ -1254,11 +1539,35 @@ def build_ui():
         except Exception as e:
             messagebox.showerror("Overdub error", str(e))
 
+    def record_all_open_takes():
+        if ENGINE.recording:
+            toggle_record()
+            return
+        if not open_takes:
+            messagebox.showinfo("Record All", "No open takes to record.")
+            return
+        ENGINE.toggle_record()
+        lengths = []
+        for path in open_takes:
+            if not path or not os.path.exists(path):
+                continue
+            try:
+                audio = load_audio_file(path)
+            except Exception:
+                continue
+            lengths.append(len(audio) / SR)
+            ENGINE.trigger(audio, gain=1.0)
+        if lengths:
+            total_ms = int((max(lengths) + 0.1) * 1000)
+            root.after(total_ms, lambda: ENGINE.recording and toggle_record())
+        update_status()
+
     btn_row = tk.Frame(rec_frame)
     btn_row.pack(fill="x", padx=6, pady=6)
 
     rec_buttons = [
         ("Record", toggle_record),
+        ("Record All", record_all_open_takes),
         ("Loop Rec", start_loop_record),
         ("Stop Loop", stop_loop_record),
         ("Play", play_selected),
@@ -1269,10 +1578,6 @@ def build_ui():
     rec_btn_widgets = []
     for label, cmd in rec_buttons:
         rec_btn_widgets.append(tk.Button(btn_row, text=label, command=cmd))
-    rec_action_btn = tk.Button(btn_row, text="Max", command=lambda: maximize_section(group_left, record_section))
-    rec_btn_widgets.append(rec_action_btn)
-    section_max_buttons.append((rec_action_btn, record_section))
-    update_max_buttons()
 
     layout_state = {"cols": 0}
 
@@ -1472,12 +1777,12 @@ def build_ui():
             parts = parts[1:]
         if not parts:
             return ""
-        leaf = parts[-1]
-        return leaf.replace("_", " ").title()
+        return " / ".join(p.replace("_", " ").title() for p in parts)
 
     def make_scroll_tab(title: str):
         tab = tk.Frame(pad_notebook)
         pad_notebook.add(tab, text=title)
+        add_tab_color_bar(tab)
         canvas = tk.Canvas(tab, highlightthickness=0)
         vbar = tk.Scrollbar(tab, orient="vertical", command=canvas.yview, width=16)
         hbar = tk.Scrollbar(tab, orient="horizontal", command=canvas.xview, width=16)
@@ -1557,22 +1862,23 @@ def build_ui():
             }
             category_keymap[cat] = {}
             cols = 6
+            tab_color = tab_color_for_widget(tab)
+            tab_fg = contrast_text_color(tab_color)
             for i, path in enumerate(paths):
                 r, c = divmod(i, cols)
                 key = path_to_key.get(path, "")
                 label = f"{key.upper()}  {short_name(path)}" if key else short_name(path)
                 if key:
                     category_keymap[cat][key] = path
-                color = neon_color_for_key(key)
                 btn = tk.Button(
                     inner,
                     width=14,
                     height=2,
                     text=label,
                     font=("Arial", 9, "bold"),
-                    bg=color,
-                    fg=contrast_text_color(color),
-                    activebackground=color,
+                    bg=tab_color,
+                    fg=tab_fg,
+                    activebackground=tab_color,
                     command=lambda p=path: trigger_sample_path(p),
                 )
                 btn.grid(row=r, column=c, padx=6, pady=6, sticky="nsew")
@@ -1608,6 +1914,8 @@ def build_ui():
 
     seq_rows = PAD_KEYS[:]  # use key pads as rows
     seq_row_paths = {}  # row_id -> path (for non-key rows)
+    seq_keymap = {}  # library key -> path for pattern rows
+    pattern_assign = {"i": 0}
     seq_grid = {k: [0] * SEQ_STEPS for k in seq_rows}
     seq_buttons = {k: [] for k in seq_rows}
     seq_step_lengths = {k: [None] * SEQ_STEPS for k in seq_rows}
@@ -1630,6 +1938,7 @@ def build_ui():
     seq_controls.pack(fill="x", padx=6, pady=(0, 6))
     tk.Button(seq_controls, text="Play", command=lambda: start_seq()).pack(side="left", padx=2)
     tk.Button(seq_controls, text="Stop", command=lambda: stop_seq()).pack(side="left", padx=2)
+    tk.Button(seq_controls, text="Restart", command=lambda: restart_seq()).pack(side="left", padx=2)
     tk.Button(seq_controls, text="Clear", command=lambda: clear_seq()).pack(side="left", padx=2)
     seq_rec_btn = tk.Button(seq_controls, text="Rec")
     seq_rec_btn.pack(side="left", padx=2)
@@ -1647,6 +1956,8 @@ def build_ui():
     def apply_loop_len(_event=None):
         seq_loop_len_var.set(get_loop_len())
         refresh_seq_buttons()
+        update_playhead_positions()
+        draw_playhead()
 
     tk.Label(seq_controls, text="Loop Len").pack(side="left", padx=(8, 2))
     loop_spin = tk.Spinbox(seq_controls, from_=1, to=SEQ_STEPS, width=4, textvariable=seq_loop_len_var, command=apply_loop_len)
@@ -1703,38 +2014,133 @@ def build_ui():
     ttk.Label(seq_fx_body, text="Gate length (steps)").pack(anchor="w", padx=6, pady=(6, 0))
     ttk.Scale(seq_fx_body, from_=0.25, to=4.0, variable=seq_gate_len_var).pack(fill="x", padx=6, pady=(0, 6))
 
+    # Playhead bar above the grid
+    playhead_frame = tk.Frame(seq_body, bg=COL_PANEL)
+    playhead_frame.pack(fill="x", padx=6, pady=(0, 4))
+    playhead_canvas = tk.Canvas(playhead_frame, height=18, bg=COL_PANEL, highlightthickness=0)
+    playhead_canvas.pack(fill="x", expand=True)
+    playhead_positions = []
+
+    def update_playhead_positions():
+        seq_inner.update_idletasks()
+        playhead_positions.clear()
+        if not seq_rows:
+            return
+        row_id = seq_rows[0]
+        row = seq_buttons.get(row_id, [])
+        if not row:
+            return
+        for btn in row:
+            x = btn.winfo_x()
+            w = btn.winfo_width()
+            playhead_positions.append(x + (w / 2))
+        width = max(seq_inner.winfo_reqwidth(), seq_canvas.winfo_width())
+        playhead_canvas.configure(scrollregion=(0, 0, width, playhead_canvas.winfo_height()))
+
+    def draw_playhead():
+        playhead_canvas.delete("playhead")
+        if not playhead_positions:
+            return
+        loop_len = get_loop_len()
+        if loop_len <= 0:
+            return
+        idx = min(seq_step["i"], loop_len - 1, len(playhead_positions) - 1)
+        x = playhead_positions[idx]
+        h = max(8, int(playhead_canvas.winfo_height()))
+        playhead_canvas.create_rectangle(x - 2, 2, x + 2, h - 2, fill=COL_ACCENT_2, outline="", tags="playhead")
+    
+    def set_playhead_from_x(x: int):
+        if not playhead_positions:
+            return
+        loop_len = get_loop_len()
+        if loop_len <= 0:
+            return
+        target = min(loop_len, len(playhead_positions))
+        x = playhead_canvas.canvasx(x)
+        best_idx = 0
+        best_dist = float("inf")
+        for i in range(target):
+            dist = abs(playhead_positions[i] - x)
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = i
+        seq_step["i"] = best_idx
+        draw_playhead()
+
+    playhead_canvas.bind("<Button-1>", lambda e: set_playhead_from_x(e.x))
+    playhead_canvas.bind("<B1-Motion>", lambda e: set_playhead_from_x(e.x))
+
     seq_canvas = tk.Canvas(seq_body, highlightthickness=0)
     seq_vbar = ttk.Scrollbar(seq_body, orient="vertical", command=seq_canvas.yview)
-    seq_hbar = ttk.Scrollbar(seq_body, orient="horizontal", command=seq_canvas.xview)
+    def on_seq_hscroll(*args):
+        seq_canvas.xview(*args)
+        playhead_canvas.xview(*args)
+    seq_hbar = ttk.Scrollbar(seq_body, orient="horizontal", command=on_seq_hscroll)
     seq_inner = tk.Frame(seq_canvas)
-    seq_inner.bind("<Configure>", lambda e: seq_canvas.configure(scrollregion=seq_canvas.bbox("all")))
+    def on_seq_inner_config(_event=None):
+        seq_canvas.configure(scrollregion=seq_canvas.bbox("all"))
+        update_playhead_positions()
+        draw_playhead()
+    seq_inner.bind("<Configure>", on_seq_inner_config)
     seq_window = seq_canvas.create_window((0, 0), window=seq_inner, anchor="nw")
 
     def on_seq_canvas_config(event):
         seq_canvas.itemconfigure(seq_window, width=event.width)
 
     seq_canvas.bind("<Configure>", on_seq_canvas_config)
-    seq_canvas.configure(yscrollcommand=seq_vbar.set, xscrollcommand=seq_hbar.set)
+    def on_seq_xscroll(*args):
+        seq_hbar.set(*args)
+        try:
+            playhead_canvas.xview_moveto(args[0])
+        except Exception:
+            pass
+    seq_canvas.configure(yscrollcommand=seq_vbar.set, xscrollcommand=on_seq_xscroll)
     seq_canvas.pack(side="left", fill="both", expand=True, padx=6, pady=6)
     seq_vbar.pack(side="right", fill="y")
     seq_hbar.pack(side="bottom", fill="x")
     bind_mousewheel(seq_canvas, seq_canvas)
     bind_mousewheel(seq_inner, seq_canvas)
 
+    def row_key_label(row_id: str) -> str:
+        if row_id in PAD_KEYS:
+            return row_id.upper()
+        path = seq_row_paths.get(row_id)
+        if not path:
+            return ""
+        key = path_to_key.get(path)
+        if not key:
+            for k, p in seq_keymap.items():
+                if p == path:
+                    key = k
+                    break
+        return key.upper() if key else ""
+
     def draw_seq_grid():
         for child in seq_inner.winfo_children():
             child.destroy()
         for r, row_id in enumerate(seq_rows):
-            label = row_id.upper() if row_id in PAD_KEYS else short_name(seq_row_paths.get(row_id, row_id))
-            tk.Label(seq_inner, text=label, width=4).grid(row=r, column=0, padx=2, pady=1)
+            key_label = row_key_label(row_id)
+            if row_id in PAD_KEYS:
+                name_label = short_name(SOUNDS.get(row_id, ""))
+            else:
+                name_label = short_name(seq_row_paths.get(row_id, row_id))
+            name_cell = tk.Label(seq_inner, text=name_label, anchor="w")
+            name_cell.grid(row=r, column=0, padx=2, pady=1, sticky="w")
+            name_cell.bind("<Button-3>", lambda e, k=row_id: show_row_menu(k, e))
             row_buttons = []
             for c in range(SEQ_STEPS):
                 btn = tk.Button(seq_inner, text="", width=1, height=1)
-                btn.grid(row=r, column=c+1, padx=0, pady=0)
+                btn.grid(row=r, column=c + 1, padx=0, pady=0)
                 btn.bind("<Button-3>", lambda e, k=row_id, i=c: show_step_menu(k, i, e))
                 row_buttons.append(btn)
+            if key_label:
+                key_cell = tk.Label(seq_inner, text=f"[{key_label}]", fg=COL_ACCENT_2)
+                key_cell.grid(row=r, column=SEQ_STEPS + 1, padx=2, pady=1, sticky="e")
+                key_cell.bind("<Button-3>", lambda e, k=row_id: show_row_menu(k, e))
             seq_buttons[row_id] = row_buttons
         refresh_seq_buttons()
+        update_playhead_positions()
+        draw_playhead()
 
     def row_sample_length_sec(row_id: str) -> float:
         path = seq_row_paths.get(row_id)
@@ -1782,6 +2188,7 @@ def build_ui():
                 fg = contrast_text_color(bg)
                 btn.config(bg=bg, fg=fg, activebackground=base_color)
                 btn.config(command=lambda k=row_id, i=c: toggle_seq(k, i))
+        draw_playhead()
 
     def toggle_seq(k, i):
         seq_grid[k][i] = 0 if seq_grid[k][i] == 1 else 1
@@ -1883,17 +2290,26 @@ def build_ui():
                 return
         else:
             seq_step["i"] = next_i
+        draw_playhead()
         root.after(step_duration_ms(), seq_tick)
 
     def start_seq():
         if seq_playing["on"]:
             return
         seq_playing["on"] = True
-        seq_step["i"] = 0
+        draw_playhead()
         seq_tick()
 
     def stop_seq():
         seq_playing["on"] = False
+        draw_playhead()
+
+    def restart_seq():
+        seq_step["i"] = 0
+        if seq_playing["on"]:
+            draw_playhead()
+        else:
+            start_seq()
 
     def clear_seq():
         for k in seq_rows:
@@ -1930,13 +2346,23 @@ def build_ui():
     def add_step_for_key(key: str | None, path: str | None = None):
         row_id = key if key else None
         if row_id is None and path:
-            row_id = f"path:{path}"
-            if row_id not in seq_rows:
-                seq_rows.insert(0, row_id)
-                seq_row_paths[row_id] = path
-                seq_grid[row_id] = [0] * SEQ_STEPS
-                seq_step_lengths[row_id] = [None] * SEQ_STEPS
-                draw_seq_grid()
+            for k in PAD_KEYS:
+                if SOUNDS.get(k) == path:
+                    row_id = k
+                    break
+        if row_id is None and path:
+            row_id = PAD_KEYS[pattern_assign["i"] % len(PAD_KEYS)]
+            pattern_assign["i"] = (pattern_assign["i"] + 1) % len(PAD_KEYS)
+        if row_id and row_id not in seq_rows:
+            seq_rows.insert(0, row_id)
+            seq_grid[row_id] = [0] * SEQ_STEPS
+            seq_step_lengths[row_id] = [None] * SEQ_STEPS
+        if path and row_id in PAD_KEYS:
+            SOUNDS[row_id] = path
+            update_pad_button(row_id)
+            seq_keymap[row_id] = path
+        if row_id and row_id not in seq_buttons:
+            draw_seq_grid()
         if row_id not in seq_rows:
             messagebox.showinfo("Pattern Maker", "This pad can't be added right now.")
             return
@@ -1964,6 +2390,34 @@ def build_ui():
     step_menu = tk.Menu(seq_body, tearoff=0)
     step_menu.add_command(label="Clear step", command=lambda: None)
     step_menu.add_command(label="Shorten to here", command=lambda: None)
+
+    row_menu = tk.Menu(seq_body, tearoff=0)
+    row_menu.add_command(label="Assign selected sample", command=lambda: None)
+    row_menu.add_command(label="Load file for row...", command=lambda: None)
+
+    def assign_path_to_row(row_id: str, path: str | None):
+        if not path or not os.path.exists(path):
+            messagebox.showerror("Assign error", f"Missing file:\n{path}")
+            return
+        if row_id in PAD_KEYS:
+            assign_sample_to_pad(path, row_id)
+            return
+        key = ensure_key_for_path(path)
+        if key:
+            seq_keymap[key] = path
+        seq_row_paths[row_id] = path
+        draw_seq_grid()
+
+    def show_row_menu(row_id: str, event):
+        row_menu.entryconfigure(0, command=lambda: assign_path_to_row(row_id, selected_sample_path()))
+        row_menu.entryconfigure(1, command=lambda: assign_path_to_row(
+            row_id,
+            filedialog.askopenfilename(
+                title="Choose sample",
+                filetypes=[("Audio files", "*.wav *.flac *.mp3 *.ogg *.aiff *.aif"), ("All files", "*.*")]
+            )
+        ))
+        row_menu.tk_popup(event.x_root, event.y_root)
 
     def show_step_menu(row_id: str, step_idx: int, event):
         loop_len = get_loop_len()
@@ -2058,9 +2512,23 @@ def build_ui():
         if updater:
             updater()
 
-    pad_notebook.bind("<<NotebookTabChanged>>", lambda _e: update_pad_scrollbar())
+    def update_current_tab_label():
+        current = pad_notebook.select()
+        if not current:
+            current_tab_var.set("")
+            current_tab_color.config(bg=COL_PANEL)
+            return
+        current_tab_var.set(pad_notebook.tab(current, "text"))
+        try:
+            tab_widget = pad_notebook.nametowidget(current)
+            current_tab_color.config(bg=tab_color_for_widget(tab_widget))
+        except Exception:
+            current_tab_color.config(bg=COL_PANEL)
+
+    pad_notebook.bind("<<NotebookTabChanged>>", lambda _e: (update_pad_scrollbar(), update_current_tab_label()))
     pad_notebook.bind("<Configure>", lambda _e: update_pad_scrollbar())
     pad_container.bind("<Configure>", lambda _e: update_pad_scrollbar())
+    update_current_tab_label()
 
     def apply_filter(*_):
         samples_list.delete(0, tk.END)
@@ -2162,10 +2630,10 @@ def build_ui():
         txt.insert(tk.END, (
             "SOUNDsbeatpad\n"
             "\n"
-            "Getting Started\n"
-            "  1) Click Studio to see Pads, Recording, and Pattern Maker.\n"
-            "  2) Click Library to browse samples by category.\n"
-            "  3) Press pad keys or click pads to play sounds.\n"
+            "Quick Start\n"
+            "  1) Open Studio and click a pad to hear its sound.\n"
+            "  2) Open Library, choose a sound, and assign it to a pad.\n"
+            "  3) In Pattern Maker, click steps to build a loop, then press Play.\n"
             "\n"
             "Navigation\n"
             "  Sidebar: switch Studio / Library.\n"
@@ -2173,27 +2641,54 @@ def build_ui():
             "  Station Close hides a pane; reopen via Closed Panels list.\n"
             "  Closed Panels: right-click for Open / Open With Others.\n"
             "\n"
+            "Recording Station\n"
+            "  Record captures the master output to a new take.\n"
+            "  Play/Pause/Stop controls playback of the selected take.\n"
+            "  Overdub plays the take and records on top of it.\n"
+            "  Loop Rec records and auto-loops the new take.\n"
+            "\n"
+            "Takes + Waveform\n"
+            "  Select a take to view the waveform.\n"
+            "  Click and drag in the waveform to set a region.\n"
+            "  Trim saves just the selected region as a new take.\n"
+            "  Cut deletes the selected region and saves a new take.\n"
+            "  Delete Take removes the selected file from disk.\n"
+            "  Save Take exports the selected take to a new location.\n"
+            "  Open Take loads an external audio file into the waveform.\n"
+            "\n"
+            "Pads Station\n"
+            "  Click pads to trigger sounds.\n"
+            "  Selected pad is the target for Library assignment.\n"
+            "  Pad colors are fixed; Library tabs set the color of library pads.\n"
+            "\n"
+            "Library\n"
+            "  Use Category + Search to find sounds.\n"
+            "  Double-click a sample to assign it to the selected pad.\n"
+            "  Drag a sample onto a pad to assign it.\n"
+            "  Load File adds an external sound to the selected pad.\n"
+            "  Audition plays the highlighted sample.\n"
+            "  Use tab arrows to switch categories; full tab name shows at top.\n"
+            "\n"
             "Pattern Maker\n"
             "  Click grid cells to toggle steps on/off.\n"
             "  Play/Stop controls run the pattern; Loop repeats it.\n"
             "  Loop Len changes how many steps the loop uses.\n"
+            "  Restart jumps playback back to step 1.\n"
+            "  Drag or click the playhead bar to set the loop start.\n"
+            "  Right-click a pad or sample to add it to the Pattern Maker.\n"
+            "  Right-click a row label to assign a new sample to that row.\n"
             "  Right-click a step for Clear or Shorten to here.\n"
             "  Pattern FX applies only to pattern playback.\n"
             "\n"
-            "Recording\n"
-            "  Record captures the master output.\n"
-            "  Play/Pause/Stop controls playback of the selected take.\n"
-            "  Overdub plays the take and records on top.\n"
-            "  Trim/Cut tools create new edited takes.\n"
-            "\n"
-            "Library / Pads\n"
-            "  Double-click a sample to assign to the selected pad.\n"
-            "  Drag a sample onto a pad to assign it.\n"
-            "  Right-click a pad or sample to add to Pattern Maker.\n"
+            "FX\n"
+            "  Lowpass/Highpass filter the master output.\n"
+            "  Drive adds distortion; Pitch shifts the next hit.\n"
+            "  Pattern FX affects only Pattern Maker playback.\n"
             "\n"
             "Shortcuts\n"
-            "  Press the key shown on each pad to trigger it.\n"
-            "  SPACE: Record toggle\n"
+            "  Pattern Station maximized: pad keys trigger row sounds.\n"
+            "  Pattern Station maximized: library keys trigger assigned row sounds.\n"
+            "  SPACE: Record toggle (Pattern Station maximized: Play/Stop)\n"
             "  L: Lowpass   H: Highpass   G: Grime Drive\n"
             "  [ / ]: Pitch down/up (next hit)\n"
             "  Arrow Up/Down: LP cutoff   Left/Right: HP cutoff\n"
@@ -2207,6 +2702,8 @@ def build_ui():
         txt.config(state="disabled")
 
     help_btn.config(command=show_help)
+    save_btn.config(command=save_selected_recording)
+    open_btn.config(command=open_take_into_waveform)
     help_menu.add_command(label="Help / Shortcuts", command=show_help)
     help_menu.add_separator()
     help_menu.add_command(label="About", command=lambda: messagebox.showinfo(
@@ -2216,6 +2713,14 @@ def build_ui():
     menubar.add_cascade(label="Help", menu=help_menu)
 
     # Preload samples
+    if not os.path.isdir(ROOT):
+        status_var.set("Sound pack not found.")
+        messagebox.showerror(
+            "Missing sound pack",
+            "SOUNDsbeatpad could not find the bundled sounds folder.\n\n"
+            f"Expected here:\n{ROOT}\n\n"
+            "Keep the 'sounds' folder next to this program when moving it to another device."
+        )
     errors = []
     for k, path in SOUNDS.items():
         try:
@@ -2332,6 +2837,7 @@ def build_ui():
         ENGINE.last_recording_path = outpath
         add_recording(outpath)
         load_waveform(outpath)
+        add_open_take(outpath)
         status_var.set(f"Trimmed and saved: {outname}")
 
     def cut_selection():
@@ -2362,6 +2868,7 @@ def build_ui():
         ENGINE.last_recording_path = outpath
         add_recording(outpath)
         load_waveform(outpath)
+        add_open_take(outpath)
         status_var.set(f"Cut and saved: {outname}")
 
     def move_selection(orig_start: float, orig_end: float, new_start: float):
@@ -2392,6 +2899,7 @@ def build_ui():
         ENGINE.last_recording_path = outpath
         add_recording(outpath)
         load_waveform(outpath)
+        add_open_take(outpath)
         new_start_norm = n_start / len(moved)
         new_end_norm = (n_start + len(seg)) / len(moved)
         trim_in.set(new_start_norm)
@@ -2473,8 +2981,39 @@ def build_ui():
         if len(all_samples) > KEY_LIMIT:
             status_var.set(f"Keys assigned to first {KEY_LIMIT} samples. Use search to find sounds.")
 
+    METER_BARS = 18
+    meter_levels = [0.0] * METER_BARS
+
+    def draw_meter():
+        meter_canvas.delete("bar")
+        w = max(1, meter_canvas.winfo_width())
+        h = max(1, meter_canvas.winfo_height())
+        gap = 2
+        bar_w = max(2, int((w - (METER_BARS + 1) * gap) / METER_BARS))
+        x = gap
+        for i, level in enumerate(meter_levels):
+            bar_h = int(level * (h - 2))
+            y0 = h - 1 - bar_h
+            if level < 0.55:
+                color = "#39ff14"
+            elif level < 0.8:
+                color = "#ffea00"
+            else:
+                color = "#ff2e63"
+            meter_canvas.create_rectangle(x, y0, x + bar_w, h - 1, fill=color, outline="", tags="bar")
+            x += bar_w + gap
+
     def update_meter():
-        meter["value"] = min(1.0, max(0.0, LAST_PEAK))
+        level = min(1.0, max(0.0, LAST_PEAK))
+        t = time.time()
+        for i in range(METER_BARS):
+            wobble = 0.85 + 0.15 * np.sin(t * 6.0 + i)
+            target = level * wobble
+            if target > meter_levels[i]:
+                meter_levels[i] = target
+            else:
+                meter_levels[i] = max(0.0, meter_levels[i] - 0.03)
+        draw_meter()
         update_status()
         root.after(60, update_meter)
     update_meter()
@@ -2495,6 +3034,12 @@ def build_ui():
             return
 
         if k == "space":
+            if is_station_only(station_pattern):
+                if seq_playing["on"]:
+                    stop_seq()
+                else:
+                    start_seq()
+                return
             toggle_record()
             return
 
@@ -2537,9 +3082,13 @@ def build_ui():
             hp_scale.set(ENGINE.hp_cutoff)
             return
 
-        if k in global_keymap:
-            trigger_sample_path(global_keymap[k])
-            return
+        if is_station_only(station_pattern):
+            if k in PAD_KEYS and k in SOUNDS:
+                trigger_sample_path(SOUNDS[k])
+                return
+            if k in seq_keymap:
+                trigger_sample_path(seq_keymap[k])
+                return
 
     root.bind("<KeyPress>", on_key)
     return root
