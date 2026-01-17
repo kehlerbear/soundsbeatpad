@@ -22,10 +22,8 @@ RECORD_PEAK = 0.98
 # -----------------------------
 # Paths + Key Mapping
 # -----------------------------
-ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "ABSTRUCT_Beatpack_Python"))
-EXTRA_ROOTS = [
-    os.path.normpath(os.path.join(os.path.dirname(__file__), "ABSTRUCT_ALL_SAMPLES")),
-]
+ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "sounds", "ABSTRUCT_Beatpack_Python"))
+EXTRA_ROOTS = []
 
 def p(*parts):
     return os.path.normpath(os.path.join(*parts))
@@ -2164,21 +2162,47 @@ def build_ui():
         txt.insert(tk.END, (
             "SOUNDsbeatpad\n"
             "\n"
+            "Getting Started\n"
+            "  1) Click Studio to see Pads, Recording, and Pattern Maker.\n"
+            "  2) Click Library to browse samples by category.\n"
+            "  3) Press pad keys or click pads to play sounds.\n"
+            "\n"
+            "Navigation\n"
+            "  Sidebar: switch Studio / Library.\n"
+            "  Station headers: Max focuses one pane; Back restores layout.\n"
+            "  Station Close hides a pane; reopen via Closed Panels list.\n"
+            "  Closed Panels: right-click for Open / Open With Others.\n"
+            "\n"
+            "Pattern Maker\n"
+            "  Click grid cells to toggle steps on/off.\n"
+            "  Play/Stop controls run the pattern; Loop repeats it.\n"
+            "  Loop Len changes how many steps the loop uses.\n"
+            "  Right-click a step for Clear or Shorten to here.\n"
+            "  Pattern FX applies only to pattern playback.\n"
+            "\n"
+            "Recording\n"
+            "  Record captures the master output.\n"
+            "  Play/Pause/Stop controls playback of the selected take.\n"
+            "  Overdub plays the take and records on top.\n"
+            "  Trim/Cut tools create new edited takes.\n"
+            "\n"
+            "Library / Pads\n"
+            "  Double-click a sample to assign to the selected pad.\n"
+            "  Drag a sample onto a pad to assign it.\n"
+            "  Right-click a pad or sample to add to Pattern Maker.\n"
+            "\n"
             "Shortcuts\n"
             "  Press the key shown on each pad to trigger it.\n"
             "  SPACE: Record toggle\n"
             "  L: Lowpass   H: Highpass   G: Grime Drive\n"
             "  [ / ]: Pitch down/up (next hit)\n"
             "  Arrow Up/Down: LP cutoff   Left/Right: HP cutoff\n"
-            "  ESC: Quit\n\n"
-            "Navigation\n"
-            "  Use the left sidebar to switch Studio / Library.\n"
-            "  Max buttons focus a station; Back restores layout.\n"
-            "  Close buttons hide a station; reopen via Closed Panels.\n"
-            "  Right-click Closed Panels for Open / Open With Others.\n\n"
-            "Remap Samples\n"
-            "  Select a pad, then double-click a sample to assign.\n"
-            "  Or click+drag a sample onto a pad button.\n"
+            "  ESC: Quit\n"
+            "\n"
+            "Troubleshooting\n"
+            "  If audio crackles, raise BLOCK or reduce CPU load.\n"
+            "  If no sound, check your output device and volume.\n"
+            "  If samples are missing, use Rescan in Library.\n"
         ))
         txt.config(state="disabled")
 
