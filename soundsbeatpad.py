@@ -398,7 +398,7 @@ def load_audio_file(path: str) -> np.ndarray:
 
 def build_ui():
     root = tk.Tk()
-    root.title("ABSTRUCT BeatPad Studio")
+    root.title("SOUNDsbeatpad")
     root.geometry("1380x820")
     root.minsize(1200, 720)
 
@@ -412,6 +412,10 @@ def build_ui():
     COL_WARN = "#ff2e63"
 
     root.configure(bg=COL_BG)
+
+    menubar = tk.Menu(root)
+    help_menu = tk.Menu(menubar, tearoff=0)
+    root.config(menu=menubar)
 
     status_var = tk.StringVar(value="Loading samples...")
     rec_var = tk.StringVar(value="REC: off")
@@ -2158,6 +2162,8 @@ def build_ui():
         txt = tk.Text(help_win, wrap="word")
         txt.pack(fill="both", expand=True, padx=8, pady=8)
         txt.insert(tk.END, (
+            "SOUNDsbeatpad\n"
+            "\n"
             "Shortcuts\n"
             "  Press the key shown on each pad to trigger it.\n"
             "  SPACE: Record toggle\n"
@@ -2165,6 +2171,11 @@ def build_ui():
             "  [ / ]: Pitch down/up (next hit)\n"
             "  Arrow Up/Down: LP cutoff   Left/Right: HP cutoff\n"
             "  ESC: Quit\n\n"
+            "Navigation\n"
+            "  Use the left sidebar to switch Studio / Library.\n"
+            "  Max buttons focus a station; Back restores layout.\n"
+            "  Close buttons hide a station; reopen via Closed Panels.\n"
+            "  Right-click Closed Panels for Open / Open With Others.\n\n"
             "Remap Samples\n"
             "  Select a pad, then double-click a sample to assign.\n"
             "  Or click+drag a sample onto a pad button.\n"
@@ -2172,6 +2183,13 @@ def build_ui():
         txt.config(state="disabled")
 
     help_btn.config(command=show_help)
+    help_menu.add_command(label="Help / Shortcuts", command=show_help)
+    help_menu.add_separator()
+    help_menu.add_command(label="About", command=lambda: messagebox.showinfo(
+        "About",
+        "SOUNDsbeatpad\nHelp menu: use Help / Shortcuts for navigation and keys."
+    ))
+    menubar.add_cascade(label="Help", menu=help_menu)
 
     # Preload samples
     errors = []
