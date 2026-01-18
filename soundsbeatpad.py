@@ -960,6 +960,12 @@ def build_ui():
     seq_section, seq_body, seq_toggle_btn, seq_max_btn = make_section(seq_pane, "Pattern Maker", True, group_key=group_seq, parent_kind="pane", container=seq_pane, pane_weight=1)
     seq_pane.add(fx_section, weight=1)
     seq_pane.add(seq_section, weight=1)
+    seq_tabs = ttk.Notebook(seq_body)
+    seq_tabs.pack(fill="both", expand=True)
+    seq_tab = tk.Frame(seq_tabs)
+    auto_tab = tk.Frame(seq_tabs)
+    seq_tabs.add(seq_tab, text="Pattern")
+    seq_tabs.add(auto_tab, text="Auto Generate")
 
     record_section, record_body, record_toggle_btn, record_max_btn = make_section(left_inner, "Recording", True, group_key=group_left, container=left_inner)
     record_section.pack(fill="x", pady=6)
@@ -1919,8 +1925,9 @@ def build_ui():
     seq_grid = {k: [0] * SEQ_STEPS for k in seq_rows}
     seq_buttons = {k: [] for k in seq_rows}
     seq_step_lengths = {k: [None] * SEQ_STEPS for k in seq_rows}
+    seq_step_vels = {k: [None] * SEQ_STEPS for k in seq_rows}
 
-    bpm_row = tk.Frame(seq_body)
+    bpm_row = tk.Frame(seq_tab)
     bpm_row.pack(fill="x", padx=6, pady=(4, 0))
     tk.Label(bpm_row, text="Tempo (BPM)", anchor="w").pack(side="left")
     bpm_label = tk.Label(bpm_row, text=str(BPM_DEFAULT), width=4, anchor="e")
@@ -1931,10 +1938,10 @@ def build_ui():
         seq_bpm.set(val)
         bpm_label.config(text=str(val))
 
-    ttk.Scale(seq_body, from_=60, to=140, value=BPM_DEFAULT,
+    ttk.Scale(seq_tab, from_=60, to=140, value=BPM_DEFAULT,
               command=on_bpm_change).pack(fill="x", padx=6, pady=(0, 6))
 
-    seq_controls = tk.Frame(seq_body)
+    seq_controls = tk.Frame(seq_tab)
     seq_controls.pack(fill="x", padx=6, pady=(0, 6))
     tk.Button(seq_controls, text="Play", command=lambda: start_seq()).pack(side="left", padx=2)
     tk.Button(seq_controls, text="Stop", command=lambda: stop_seq()).pack(side="left", padx=2)
@@ -1965,7 +1972,7 @@ def build_ui():
     loop_spin.bind("<FocusOut>", apply_loop_len)
     loop_spin.bind("<Return>", apply_loop_len)
 
-    seq_fx_frame = tk.LabelFrame(seq_body, text="Pattern FX")
+    seq_fx_frame = tk.LabelFrame(seq_tab, text="Pattern FX")
     seq_fx_header = tk.Frame(seq_fx_frame)
     seq_fx_header.pack(fill="x", padx=4, pady=(4, 2))
     tk.Label(seq_fx_header, text="Pattern FX").pack(side="left")
@@ -2015,7 +2022,7 @@ def build_ui():
     ttk.Scale(seq_fx_body, from_=0.25, to=4.0, variable=seq_gate_len_var).pack(fill="x", padx=6, pady=(0, 6))
 
     # Playhead bar above the grid
-    playhead_frame = tk.Frame(seq_body, bg=COL_PANEL)
+    playhead_frame = tk.Frame(seq_tab, bg=COL_PANEL)
     playhead_frame.pack(fill="x", padx=6, pady=(0, 4))
     playhead_canvas = tk.Canvas(playhead_frame, height=18, bg=COL_PANEL, highlightthickness=0)
     playhead_canvas.pack(fill="x", expand=True)
@@ -2070,12 +2077,12 @@ def build_ui():
     playhead_canvas.bind("<Button-1>", lambda e: set_playhead_from_x(e.x))
     playhead_canvas.bind("<B1-Motion>", lambda e: set_playhead_from_x(e.x))
 
-    seq_canvas = tk.Canvas(seq_body, highlightthickness=0)
-    seq_vbar = ttk.Scrollbar(seq_body, orient="vertical", command=seq_canvas.yview)
+    seq_canvas = tk.Canvas(seq_tab, highlightthickness=0)
+    seq_vbar = ttk.Scrollbar(seq_tab, orient="vertical", command=seq_canvas.yview)
     def on_seq_hscroll(*args):
         seq_canvas.xview(*args)
         playhead_canvas.xview(*args)
-    seq_hbar = ttk.Scrollbar(seq_body, orient="horizontal", command=on_seq_hscroll)
+    seq_hbar = ttk.Scrollbar(seq_tab, orient="horizontal", command=on_seq_hscroll)
     seq_inner = tk.Frame(seq_canvas)
     def on_seq_inner_config(_event=None):
         seq_canvas.configure(scrollregion=seq_canvas.bbox("all"))
@@ -2195,6 +2202,11 @@ def build_ui():
         if k in seq_step_lengths and 0 <= i < SEQ_STEPS:
             if seq_grid[k][i] == 0:
                 seq_step_lengths[k][i] = None
+        if k in seq_step_vels and 0 <= i < SEQ_STEPS:
+            if seq_grid[k][i] == 0:
+                seq_step_vels[k][i] = None
+            else:
+                seq_step_vels[k][i] = 1.0
         refresh_seq_buttons()
 
     def clear_seq_step(k, i):
@@ -2202,6 +2214,8 @@ def build_ui():
             seq_grid[k][i] = 0
             if k in seq_step_lengths:
                 seq_step_lengths[k][i] = None
+            if k in seq_step_vels:
+                seq_step_vels[k][i] = None
             refresh_seq_buttons()
 
     def step_duration_ms():
@@ -2236,7 +2250,7 @@ def build_ui():
         gate_steps = max(0.05, float(seq_gate_len_var.get()))
         return trim_audio_to_steps(audio, gate_steps)
 
-    def trigger_seq_path(path: str, gate_steps: float | None = None):
+    def trigger_seq_path(path: str, gate_steps: float | None = None, gain_mul: float = 1.0):
         if not path:
             return
         try:
@@ -2252,6 +2266,8 @@ def build_ui():
                 audio = trim_audio_to_steps(audio, gate_steps)
             else:
                 audio = apply_seq_gate(audio)
+            gain = float(gain) * max(0.0, float(gain_mul))
+            gain = min(1.5, gain)
             ENGINE.trigger(audio, gain=gain)
         except Exception as e:
             messagebox.showerror("Play error", str(e))
@@ -2264,11 +2280,16 @@ def build_ui():
                 gate_steps = float(custom)
         if gate_steps is not None and seq_gate_var.get():
             gate_steps = min(gate_steps, float(seq_gate_len_var.get()))
+        gain_mul = 1.0
+        if step_idx is not None and row_id in seq_step_vels and 0 <= step_idx < SEQ_STEPS:
+            vel = seq_step_vels[row_id][step_idx]
+            if vel is not None:
+                gain_mul = float(vel)
         if row_id in seq_row_paths:
-            trigger_seq_path(seq_row_paths[row_id], gate_steps=gate_steps)
+            trigger_seq_path(seq_row_paths[row_id], gate_steps=gate_steps, gain_mul=gain_mul)
             return
         if row_id in PAD_KEYS and row_id in SOUNDS:
-            trigger_seq_path(SOUNDS[row_id], gate_steps=gate_steps)
+            trigger_seq_path(SOUNDS[row_id], gate_steps=gate_steps, gain_mul=gain_mul)
 
     def seq_tick():
         if not seq_playing["on"]:
@@ -2316,6 +2337,8 @@ def build_ui():
             seq_grid[k] = [0] * SEQ_STEPS
             if k in seq_step_lengths:
                 seq_step_lengths[k] = [None] * SEQ_STEPS
+            if k in seq_step_vels:
+                seq_step_vels[k] = [None] * SEQ_STEPS
         refresh_seq_buttons()
 
     seq_recording = {"on": False, "auto_play": False}
@@ -2357,6 +2380,9 @@ def build_ui():
             seq_rows.insert(0, row_id)
             seq_grid[row_id] = [0] * SEQ_STEPS
             seq_step_lengths[row_id] = [None] * SEQ_STEPS
+            seq_step_vels[row_id] = [None] * SEQ_STEPS
+        if row_id and row_id not in seq_step_vels:
+            seq_step_vels[row_id] = [None] * SEQ_STEPS
         if path and row_id in PAD_KEYS:
             SOUNDS[row_id] = path
             update_pad_button(row_id)
@@ -2381,18 +2407,30 @@ def build_ui():
         seq_grid[row_id][idx] = 1
         refresh_seq_buttons()
 
-    pattern_menu = tk.Menu(seq_body, tearoff=0)
+    pattern_menu = tk.Menu(seq_tab, tearoff=0)
     pattern_menu.add_command(label="Add to Pattern Maker", command=lambda: None)
 
     def show_pattern_menu(key: str | None, path: str | None, event):
         pattern_menu.entryconfigure(0, command=lambda: add_step_for_key(key, path))
+        try:
+            auto_menu.delete(0, tk.END)
+            if path:
+                for i in range(4):
+                    auto_menu.add_command(
+                        label=f"Slot {i+1}",
+                        command=lambda idx=i, p=path: set_auto_slot(idx, p),
+                    )
+            else:
+                auto_menu.add_command(label="Select a sound first", state="disabled")
+        except NameError:
+            pass
         pattern_menu.tk_popup(event.x_root, event.y_root)
 
-    step_menu = tk.Menu(seq_body, tearoff=0)
+    step_menu = tk.Menu(seq_tab, tearoff=0)
     step_menu.add_command(label="Clear step", command=lambda: None)
     step_menu.add_command(label="Shorten to here", command=lambda: None)
 
-    row_menu = tk.Menu(seq_body, tearoff=0)
+    row_menu = tk.Menu(seq_tab, tearoff=0)
     row_menu.add_command(label="Assign selected sample", command=lambda: None)
     row_menu.add_command(label="Load file for row...", command=lambda: None)
 
@@ -2452,6 +2490,430 @@ def build_ui():
                 refresh_seq_buttons()
             step_menu.entryconfigure(1, state="normal", command=shorten)
         step_menu.tk_popup(event.x_root, event.y_root)
+
+    # -----------------------------
+    # Pattern Generator (Auto)
+    # -----------------------------
+    PRESETS = {
+        "PHONK": {
+            "hat_division": 16,
+            "swing": 0.08,
+            "downbeat_prob": 0.9,
+            "kick_prob_map": [0.7, 0.05, 0.1, 0.15, 0.45, 0.05, 0.12, 0.2, 0.55, 0.05, 0.18, 0.25, 0.5, 0.06, 0.18, 0.2],
+            "hat_prob": 0.78,
+            "hat_skip_prob": 0.15,
+            "hat_roll_prob": 0.08,
+            "snare_ghost_prob": 0.25,
+            "fill_prob": 0.18,
+            "d_style": "syncopated",
+            "d_prob_map": [0.05, 0.2, 0.1, 0.3, 0.06, 0.18, 0.12, 0.28, 0.08, 0.2, 0.14, 0.26, 0.06, 0.22, 0.12, 0.3],
+        },
+        "TRAP": {
+            "hat_division": 16,
+            "swing": 0.05,
+            "downbeat_prob": 0.85,
+            "kick_prob_map": [0.75, 0.05, 0.05, 0.2, 0.6, 0.06, 0.18, 0.1, 0.65, 0.05, 0.2, 0.25, 0.55, 0.06, 0.22, 0.16],
+            "hat_prob": 0.9,
+            "hat_skip_prob": 0.12,
+            "hat_roll_prob": 0.15,
+            "snare_ghost_prob": 0.2,
+            "fill_prob": 0.22,
+            "d_style": "syncopated",
+            "d_prob_map": [0.06, 0.18, 0.12, 0.26, 0.05, 0.22, 0.1, 0.3, 0.06, 0.22, 0.12, 0.28, 0.05, 0.2, 0.1, 0.3],
+        },
+        "DRILL": {
+            "hat_division": 16,
+            "swing": 0.1,
+            "downbeat_prob": 0.8,
+            "kick_prob_map": [0.65, 0.08, 0.12, 0.22, 0.55, 0.08, 0.22, 0.16, 0.6, 0.08, 0.24, 0.22, 0.5, 0.08, 0.26, 0.2],
+            "hat_prob": 0.82,
+            "hat_skip_prob": 0.18,
+            "hat_roll_prob": 0.12,
+            "snare_ghost_prob": 0.18,
+            "fill_prob": 0.2,
+            "d_style": "syncopated",
+            "d_prob_map": [0.08, 0.24, 0.12, 0.32, 0.08, 0.26, 0.14, 0.3, 0.1, 0.24, 0.14, 0.3, 0.08, 0.26, 0.12, 0.32],
+        },
+        "DUBSTEP/WUB": {
+            "hat_division": 8,
+            "swing": 0.0,
+            "downbeat_prob": 0.95,
+            "kick_prob_map": [0.85, 0.05, 0.06, 0.12, 0.5, 0.05, 0.12, 0.08, 0.7, 0.05, 0.18, 0.16, 0.45, 0.05, 0.16, 0.12],
+            "hat_prob": 0.75,
+            "hat_skip_prob": 0.1,
+            "hat_roll_prob": 0.05,
+            "snare_ghost_prob": 0.1,
+            "fill_prob": 0.15,
+            "d_style": "halftime",
+            "d_prob_map": [0.2, 0.05, 0.06, 0.08, 0.12, 0.06, 0.08, 0.1, 0.3, 0.06, 0.12, 0.14, 0.2, 0.06, 0.1, 0.12],
+        },
+    }
+
+    ROLE_OPTIONS = ["Kick", "Snare", "Hats", "Bass"]
+    DEFAULT_SLOT_ROLES = ["Kick", "Snare", "Hats", "Bass"]
+
+    def _empty_grid(bars: int) -> list[list[int]]:
+        return [[0] * 16 for _ in range(bars)]
+
+    def _empty_vels(bars: int) -> list[list[float | None]]:
+        return [[None] * 16 for _ in range(bars)]
+
+    def _count_hits(row: list[int]) -> int:
+        return int(sum(1 for v in row if v))
+
+    def _place_hit(grid, vels, bar, step, vel):
+        grid[bar][step] = 1
+        vels[bar][step] = vel
+
+    def _flatten(grid, loop_len: int) -> list[int]:
+        flat = [v for bar in grid for v in bar]
+        if loop_len <= 0:
+            return []
+        return (flat + [0] * loop_len)[:loop_len]
+
+    def _flatten_vels(vels, loop_len: int) -> list[float | None]:
+        flat = [v for bar in vels for v in bar]
+        if loop_len <= 0:
+            return []
+        return (flat + [None] * loop_len)[:loop_len]
+
+    def _enforce_density(grid, vels, bar, min_hits, max_hits, rng, preferred_steps, mandatory_steps=None):
+        mandatory_steps = mandatory_steps or []
+        steps = list(range(16))
+        rng.shuffle(steps)
+        count = _count_hits(grid[bar])
+        if count < min_hits:
+            for step in preferred_steps:
+                if count >= min_hits:
+                    break
+                if grid[bar][step] == 0:
+                    _place_hit(grid, vels, bar, step, 0.85)
+                    count += 1
+        if count > max_hits:
+            removable = [s for s in steps if grid[bar][s] == 1 and s not in mandatory_steps]
+            while count > max_hits and removable:
+                step = removable.pop()
+                grid[bar][step] = 0
+                vels[bar][step] = None
+                count -= 1
+
+    def _avoid_kick_clumps(grid, vels, bar, rng):
+        seq = grid[bar]
+        for i in range(16):
+            if seq[i] and seq[(i + 1) % 16] and seq[(i + 2) % 16]:
+                remove = i + 1
+                seq[remove % 16] = 0
+                vels[bar][remove % 16] = None
+
+    def _apply_fill(grid, vels, bar, rng, prob):
+        if rng.random() > prob:
+            return
+        for step in (14, 15):
+            if grid[bar][step] == 0:
+                _place_hit(grid, vels, bar, step, 0.65)
+
+    def generate_pattern(preset_name: str, bars: int = 2, seed: int | None = None, roles: dict | None = None, variation: float = 0.35):
+        roles = roles or {"A": "Kick", "B": "Snare", "C": "Hats", "D": "Bass"}
+        preset = PRESETS.get(preset_name, PRESETS["TRAP"])
+        bars = max(1, min(4, int(bars)))
+        rng = np.random.default_rng(seed)
+        var = max(0.0, min(1.0, float(variation)))
+
+        pattern = {"bars": bars, "steps_per_bar": 16, "slots": {}, "swing": {}}
+        swing_offsets = [preset["swing"] if i % 2 == 1 else 0.0 for i in range(16)]
+        pattern["swing"] = {"amount": preset["swing"], "offsets": [swing_offsets[:] for _ in range(bars)]}
+
+        role_data = {}
+        role_order = ["Kick", "Snare", "Hats", "Bass"]
+        for role in role_order:
+            if role not in roles.values():
+                continue
+            grid = _empty_grid(bars)
+            vels = _empty_vels(bars)
+
+            for bar in range(bars):
+                intensity = 1.0 + (0.2 * var if bar == 0 else 0.4 * var)
+                if role == "Snare":
+                    _place_hit(grid, vels, bar, 8, 1.0)
+                    if rng.random() < preset["snare_ghost_prob"] * intensity:
+                        _place_hit(grid, vels, bar, 12, 0.5)
+                elif role == "Kick":
+                    if rng.random() < preset["downbeat_prob"]:
+                        _place_hit(grid, vels, bar, 0, 1.0)
+                    for step, prob in enumerate(preset["kick_prob_map"]):
+                        if rng.random() < prob * intensity:
+                            _place_hit(grid, vels, bar, step, 0.9 if step in (0, 8) else 0.75)
+                    _avoid_kick_clumps(grid, vels, bar, rng)
+                elif role == "Hats":
+                    if preset["hat_division"] == 8:
+                        steps = list(range(0, 16, 2))
+                    else:
+                        steps = list(range(16))
+                    for step in steps:
+                        if rng.random() < preset["hat_prob"] * intensity:
+                            if rng.random() < preset["hat_skip_prob"] * (1.0 - 0.4 * var):
+                                continue
+                            vel = 0.9 if step in (0, 4, 8, 12) else 0.6
+                            _place_hit(grid, vels, bar, step, vel)
+                            if rng.random() < preset["hat_roll_prob"] * (1.0 + 0.6 * var) and step < 15:
+                                _place_hit(grid, vels, bar, step + 1, 0.5)
+                else:  # Bass / Wub / Melodic hit
+                    kick_grid = role_data.get("Kick", {}).get("grid")
+                    snare_grid = role_data.get("Snare", {}).get("grid")
+                    for step, prob in enumerate(preset["d_prob_map"]):
+                        if kick_grid and kick_grid[bar][step] == 1 and rng.random() < 0.7:
+                            continue
+                        if snare_grid and snare_grid[bar][step] == 1 and rng.random() < 0.7:
+                            continue
+                        if rng.random() < prob * intensity:
+                            _place_hit(grid, vels, bar, step, 0.8 if step % 4 == 0 else 0.6)
+                    if preset["d_style"] == "halftime":
+                        if rng.random() < 0.4:
+                            _place_hit(grid, vels, bar, 10, 0.85)
+
+                if role == "Kick":
+                    _enforce_density(grid, vels, bar, 2, 6, rng, [0, 8, 12, 4, 10, 6, 14])
+                    _avoid_kick_clumps(grid, vels, bar, rng)
+                elif role == "Snare":
+                    _enforce_density(grid, vels, bar, 1, 3, rng, [8, 12, 4, 14], mandatory_steps=[8])
+                elif role == "Hats":
+                    _enforce_density(grid, vels, bar, 6, 14, rng, list(range(16)))
+                else:
+                    _enforce_density(grid, vels, bar, 2, 8, rng, [3, 7, 10, 14, 5, 9, 13, 15])
+                    kick_grid = role_data.get("Kick", {}).get("grid")
+                    snare_grid = role_data.get("Snare", {}).get("grid")
+                    if kick_grid or snare_grid:
+                        for step in range(16):
+                            if grid[bar][step] == 1 and (
+                                (kick_grid and kick_grid[bar][step] == 1) or (snare_grid and snare_grid[bar][step] == 1)
+                            ):
+                                if rng.random() < 0.7:
+                                    grid[bar][step] = 0
+                                    vels[bar][step] = None
+
+                _apply_fill(grid, vels, bar, rng, preset["fill_prob"] * (0.7 + 0.6 * var))
+
+            role_data[role] = {"role": role, "grid": grid, "vel": vels}
+
+        for slot_id, role in roles.items():
+            if role not in role_data:
+                continue
+            grid = [row[:] for row in role_data[role]["grid"]]
+            vels = [row[:] for row in role_data[role]["vel"]]
+            pattern["slots"][slot_id] = {"role": role, "grid": grid, "vel": vels}
+
+        return pattern
+
+    def generate_preview_text(pattern: dict) -> str:
+        bars = pattern.get("bars", 1)
+        slots = pattern.get("slots", {})
+        lines = []
+        order = ["A", "B", "C", "D"]
+        role_to_label = {"Kick": "K", "Snare": "S", "Hats": "H", "Bass": "D"}
+        for slot_id in order:
+            slot = slots.get(slot_id)
+            if not slot:
+                continue
+            label = role_to_label.get(slot.get("role", ""), slot_id)
+            grid = slot.get("grid", [])
+            flat = "".join("x" if step else "-" for bar in grid for step in bar)
+            lines.append(f"{label}: {flat}")
+        return "\n".join(lines)
+
+    def generate_preset_examples():
+        examples = {}
+        for preset in PRESETS:
+            examples[preset] = []
+            for seed in range(10):
+                pattern = generate_pattern(preset, bars=2, seed=seed)
+                examples[preset].append(generate_preview_text(pattern))
+        return examples
+
+    # -----------------------------
+    # Auto Generate (Pattern Maker)
+    # -----------------------------
+    auto_slots = []
+    auto_clear_var = tk.BooleanVar(value=True)
+    auto_var_var = tk.IntVar(value=35)
+    auto_len_var = tk.BooleanVar(value=False)
+    auto_play_var = tk.BooleanVar(value=True)
+    auto_preset_var = tk.StringVar(value="TRAP")
+    auto_seed_var = tk.StringVar(value="")
+
+    auto_header = tk.Frame(auto_tab, bg=COL_PANEL)
+    auto_header.pack(fill="x", padx=6, pady=(8, 4))
+    tk.Label(auto_header, text="Auto Generate", font=("Arial", 11, "bold"), bg=COL_PANEL, fg=COL_TEXT).pack(side="left")
+    tk.Label(auto_header, text="Pick 1-4 sounds, then generate a pattern.", bg=COL_PANEL, fg=COL_MUTED).pack(side="left", padx=8)
+
+    def set_auto_slot(idx: int, path: str | None):
+        if not path:
+            messagebox.showinfo("Auto Generate", "Select a sound first.")
+            return
+        if not os.path.exists(path):
+            messagebox.showerror("Auto Generate", f"Missing file:\n{path}")
+            return
+        auto_slots[idx]["path"] = path
+        auto_slots[idx]["name_var"].set(short_name(path, max_len=20))
+
+    def set_auto_from_pad(idx: int):
+        key = selected_pad.get()
+        path = SOUNDS.get(key)
+        if not path:
+            messagebox.showinfo("Auto Generate", "Select a pad with a sound assigned.")
+            return
+        set_auto_slot(idx, path)
+
+    def set_auto_from_sample(idx: int):
+        path = selected_sample_path()
+        if not path:
+            messagebox.showinfo("Auto Generate", "Select a sound in the Library first.")
+            return
+        set_auto_slot(idx, path)
+
+    def set_auto_from_file(idx: int):
+        path = filedialog.askopenfilename(
+            title="Choose sample",
+            filetypes=[("Audio files", "*.wav *.flac *.mp3 *.ogg *.aiff *.aif"), ("All files", "*.*")]
+        )
+        if path:
+            set_auto_slot(idx, path)
+
+    def clear_auto_slot(idx: int):
+        slot = auto_slots[idx]
+        slot["path"] = None
+        slot["name_var"].set("(empty)")
+        row_id = slot["row_id"]
+        removed = False
+        if row_id in seq_rows:
+            seq_rows.remove(row_id)
+            removed = True
+        seq_row_paths.pop(row_id, None)
+        seq_grid.pop(row_id, None)
+        seq_step_lengths.pop(row_id, None)
+        seq_step_vels.pop(row_id, None)
+        seq_buttons.pop(row_id, None)
+        if removed:
+            draw_seq_grid()
+
+    slot_labels = ["A", "B", "C", "D"]
+    for i in range(4):
+        row = tk.Frame(auto_tab, bg=COL_BG)
+        row.pack(fill="x", padx=6, pady=4)
+        tk.Label(row, text=f"Slot {slot_labels[i]}", width=8, anchor="w", bg=COL_BG, fg=COL_TEXT).pack(side="left")
+        role_var = tk.StringVar(value=DEFAULT_SLOT_ROLES[i])
+        role_menu = ttk.Combobox(row, textvariable=role_var, values=ROLE_OPTIONS, width=8, state="readonly")
+        role_menu.pack(side="left", padx=(0, 6))
+        name_var = tk.StringVar(value="(empty)")
+        tk.Label(row, textvariable=name_var, anchor="w", bg=COL_BG, fg=COL_TEXT).pack(side="left", fill="x", expand=True, padx=(6, 8))
+        tk.Button(row, text="Use Pad", command=lambda idx=i: set_auto_from_pad(idx)).pack(side="left", padx=2)
+        tk.Button(row, text="Use Sample", command=lambda idx=i: set_auto_from_sample(idx)).pack(side="left", padx=2)
+        tk.Button(row, text="Browse...", command=lambda idx=i: set_auto_from_file(idx)).pack(side="left", padx=2)
+        tk.Button(row, text="Clear", command=lambda idx=i: clear_auto_slot(idx)).pack(side="left", padx=2)
+        auto_slots.append({
+            "slot_id": slot_labels[i],
+            "row_id": f"auto-{i+1}",
+            "path": None,
+            "name_var": name_var,
+            "role_var": role_var,
+        })
+
+    auto_menu = tk.Menu(pattern_menu, tearoff=0)
+    pattern_menu.add_separator()
+    pattern_menu.add_cascade(label="Send to Auto Slot", menu=auto_menu)
+
+    auto_opts = tk.Frame(auto_tab, bg=COL_BG)
+    auto_opts.pack(fill="x", padx=6, pady=(6, 4))
+    ttk.Checkbutton(auto_opts, text="Clear current pattern", variable=auto_clear_var).pack(side="left")
+    ttk.Checkbutton(auto_opts, text="Auto loop len (bars)", variable=auto_len_var).pack(side="left", padx=(8, 0))
+    ttk.Checkbutton(auto_opts, text="Auto play", variable=auto_play_var).pack(side="left", padx=(8, 0))
+    tk.Label(auto_opts, text="Preset", bg=COL_BG, fg=COL_TEXT).pack(side="left", padx=(10, 4))
+    preset_menu = ttk.Combobox(auto_opts, textvariable=auto_preset_var, values=list(PRESETS.keys()), width=12, state="readonly")
+    preset_menu.pack(side="left")
+    tk.Label(auto_opts, text="Seed", bg=COL_BG, fg=COL_TEXT).pack(side="left", padx=(10, 4))
+    tk.Entry(auto_opts, textvariable=auto_seed_var, width=8).pack(side="left")
+    tk.Label(auto_opts, text="Variation", bg=COL_BG, fg=COL_TEXT).pack(side="left", padx=(12, 4))
+    auto_var_label = tk.Label(auto_opts, text=str(auto_var_var.get()), bg=COL_BG, fg=COL_TEXT, width=4, anchor="e")
+    auto_var_label.pack(side="right")
+    auto_var_scale = ttk.Scale(auto_opts, from_=0, to=100, variable=auto_var_var)
+    auto_var_scale.pack(side="right", fill="x", expand=True, padx=(4, 6))
+
+    def on_auto_var_change(v):
+        auto_var_label.config(text=str(int(float(v))))
+
+    auto_var_scale.configure(command=on_auto_var_change)
+
+    def ensure_auto_row(slot):
+        row_id = slot["row_id"]
+        if row_id not in seq_rows:
+            seq_rows.append(row_id)
+        seq_row_paths[row_id] = slot["path"]
+        if row_id not in seq_grid:
+            seq_grid[row_id] = [0] * SEQ_STEPS
+        if row_id not in seq_step_lengths:
+            seq_step_lengths[row_id] = [None] * SEQ_STEPS
+        if row_id not in seq_step_vels:
+            seq_step_vels[row_id] = [None] * SEQ_STEPS
+
+    def auto_generate_pattern():
+        chosen = [slot for slot in auto_slots if slot["path"]]
+        if not chosen:
+            messagebox.showinfo("Auto Generate", "Add at least one sound slot first.")
+            return
+        seed = None
+        if auto_seed_var.get().strip():
+            try:
+                seed = int(auto_seed_var.get().strip())
+            except ValueError:
+                messagebox.showinfo("Auto Generate", "Seed must be an integer.")
+                return
+        rng = np.random.default_rng(seed)
+        if auto_len_var.get():
+            max_bars = max(1, min(4, SEQ_STEPS // 16))
+            bars = int(rng.integers(1, max_bars + 1))
+            seq_loop_len_var.set(bars * 16)
+            apply_loop_len()
+        if auto_clear_var.get():
+            clear_seq()
+        else:
+            for slot in chosen:
+                row_id = slot["row_id"]
+                if row_id in seq_grid:
+                    seq_grid[row_id] = [0] * SEQ_STEPS
+                    if row_id in seq_step_lengths:
+                        seq_step_lengths[row_id] = [None] * SEQ_STEPS
+                    if row_id in seq_step_vels:
+                        seq_step_vels[row_id] = [None] * SEQ_STEPS
+        for slot in chosen:
+            ensure_auto_row(slot)
+        loop_len = get_loop_len()
+        bars = max(1, min(4, int(np.ceil(loop_len / 16.0))))
+        variation = max(0.0, min(1.0, auto_var_var.get() / 100.0))
+
+        roles = {}
+        for slot in chosen:
+            roles[slot["slot_id"]] = slot["role_var"].get()
+
+        pattern = generate_pattern(auto_preset_var.get(), bars=bars, seed=seed, roles=roles, variation=variation)
+
+        for slot in chosen:
+            slot_id = slot["slot_id"]
+            row_id = slot["row_id"]
+            slot_data = pattern["slots"].get(slot_id)
+            if not slot_data:
+                continue
+            grid_flat = _flatten(slot_data["grid"], loop_len)
+            vel_flat = _flatten_vels(slot_data["vel"], loop_len)
+            seq_grid[row_id] = (grid_flat + [0] * SEQ_STEPS)[:SEQ_STEPS]
+            if row_id in seq_step_vels:
+                seq_step_vels[row_id] = (vel_flat + [None] * SEQ_STEPS)[:SEQ_STEPS]
+
+        draw_seq_grid()
+        if auto_play_var.get() and not seq_playing["on"]:
+            start_seq()
+
+    auto_actions = tk.Frame(auto_tab, bg=COL_BG)
+    auto_actions.pack(fill="x", padx=6, pady=(4, 8))
+    tk.Button(auto_actions, text="Generate Pattern", command=auto_generate_pattern).pack(side="left", padx=2)
 
     draw_seq_grid()
 
